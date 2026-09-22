@@ -47,6 +47,7 @@ verirse diğerleri çalışmaya devam eder; ölü bir bağlantı denk gelirse s�
 
 ```bash
 open -a WallShift --args --change-now      # hemen değiştir (Shortcuts/cron için)
+open -a WallShift --args --change-screen=2 # yalnızca 2. ekranı değiştir (her ekrana farklı görsel modunda)
 open -a WallShift --args --open-settings   # ayarları aç
 
 ~/Applications/WallShift.app/Contents/MacOS/WallShift --print-status

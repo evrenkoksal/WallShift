@@ -58,6 +58,11 @@ final class AppState: ObservableObject {
         // `--change-now` lets Shortcuts, cron or the Terminal trigger a change:
         // open -a WallShift --args --change-now
         let forcedChange = CommandLine.arguments.contains("--change-now")
+        // --change-screen=N changes only display N (1-based) in per-screen mode.
+        if let argument = CommandLine.arguments.first(where: { $0.hasPrefix("--change-screen=") }),
+           let number = Int(argument.dropFirst("--change-screen=".count)) {
+            Task { await changeWallpaper(onlyScreenAt: number - 1) }
+        }
         if CommandLine.arguments.contains("--open-settings") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
                 self?.requestSettings()
@@ -72,8 +77,14 @@ final class AppState: ObservableObject {
 
     // MARK: - Main action
 
-    func changeWallpaper() async {
+    /// Downloads and applies new wallpaper(s).
+    /// - Parameter screenIndex: in per-screen mode, change only the display at this
+    ///   `NSScreen.screens` index and keep the others; nil changes every screen.
+    func changeWallpaper(onlyScreenAt screenIndex: Int? = nil) async {
         guard !isWorking else { return }
+        let singleScreen = screenIndex.flatMap { index in
+            usesPerScreenImages && NSScreen.screens.indices.contains(index) ? index : nil
+        }
         isWorking = true
         defer { isWorking = false }
 
@@ -86,7 +97,7 @@ final class AppState: ObservableObject {
             var queue = (fresh.isEmpty ? pool : fresh).shuffled()
 
             // One image per screen in per-screen mode, otherwise a single image.
-            let needed = usesPerScreenImages ? NSScreen.screens.count : 1
+            let needed = singleScreen != nil ? 1 : (usesPerScreenImages ? NSScreen.screens.count : 1)
             var downloaded: [(RemoteImage, URL)] = []
             var lastFailure: Error?
             while downloaded.count < needed, let candidate = queue.popLast() {
@@ -99,6 +110,16 @@ final class AppState: ObservableObject {
                 }
             }
             guard !downloaded.isEmpty else { throw lastFailure ?? WallShiftError.noImagesFound }
+
+            if let singleScreen {
+                let (image, file) = downloaded[0]
+                try WallpaperManager.apply(file: file, toScreenAt: singleScreen, prefs: prefs)
+                recordReplacement(image, file: file, screenIndex: singleScreen)
+                lastError = nil
+                // A one-screen touch-up should not push back the next full change.
+                scheduleNext(resetCycle: false)
+                return
+            }
 
             // If the pool ran short, the remaining screens reuse images cyclically.
             try await WallpaperManager.apply(files: downloaded.map(\.1), prefs: prefs)
@@ -152,27 +173,54 @@ final class AppState: ObservableObject {
         prefs.differentImagePerScreen && prefs.applyToAllScreens && NSScreen.screens.count > 1
     }
 
+    private func makeRecord(_ image: RemoteImage, file: URL, at date: Date) -> WallpaperRecord {
+        WallpaperRecord(
+            id: UUID().uuidString,
+            source: image.source,
+            title: image.title,
+            credit: image.credit,
+            remoteURL: image.imageURL,
+            pageURL: image.pageURL,
+            fileName: file.lastPathComponent,
+            appliedAt: date
+        )
+    }
+
     private func record(_ items: [(RemoteImage, URL)]) {
         let now = Date()
-        let records = items.map { image, file in
-            WallpaperRecord(
-                id: UUID().uuidString,
-                source: image.source,
-                title: image.title,
-                credit: image.credit,
-                remoteURL: image.imageURL,
-                pageURL: image.pageURL,
-                fileName: file.lastPathComponent,
-                appliedAt: now
-            )
+        let records = items.map { makeRecord($0.0, file: $0.1, at: now) }
+        commit(records, newIdentities: items.map { $0.0.identity })
+    }
+
+    /// Stores a new set where only `screenIndex` changed and the other screens keep their image.
+    private func recordReplacement(_ image: RemoteImage, file: URL, screenIndex: Int) {
+        let replacement = makeRecord(image, file: file, at: Date())
+        var images = current.map(screenImages(of:)) ?? []
+        if images.isEmpty {
+            images = Array(repeating: replacement, count: NSScreen.screens.count)
         }
+        images[screenIndex] = replacement
+        commit(images, newIdentities: [image.identity])
+    }
+
+    /// The image each screen shows for `entry`, expanded to one per display.
+    func screenImages(of entry: WallpaperRecord) -> [WallpaperRecord] {
+        let images = entry.images.map { image -> WallpaperRecord in
+            var single = image
+            single.companions = nil
+            return single
+        }
+        return NSScreen.screens.indices.map { images[$0 % images.count] }
+    }
+
+    private func commit(_ records: [WallpaperRecord], newIdentities: [String]) {
         var entry = records[0]
         if records.count > 1 { entry.companions = Array(records.dropFirst()) }
         current = entry
         history.insert(entry, at: 0)
         history = Array(history.prefix(max(prefs.keepHistoryCount, 5)))
         historyIndex = 0
-        recentIdentities.append(contentsOf: items.map { $0.0.identity })
+        recentIdentities.append(contentsOf: newIdentities)
         recentIdentities = Array(recentIdentities.suffix(300))
         saveHistory()
         WallpaperManager.pruneCache(limitMB: prefs.cacheLimitMB, keeping: protectedFileNames())
