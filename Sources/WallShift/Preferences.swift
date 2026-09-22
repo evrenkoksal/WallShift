@@ -37,6 +37,11 @@ final class Preferences: ObservableObject {
         didSet { store.set(applyToAllScreens, forKey: Key.applyToAllScreens) }
     }
 
+    /// Gives every display its own picture instead of mirroring one image.
+    @Published var differentImagePerScreen: Bool {
+        didSet { store.set(differentImagePerScreen, forKey: Key.differentImagePerScreen) }
+    }
+
     @Published var scaling: ScalingMode {
         didSet { store.set(scaling.rawValue, forKey: Key.scaling) }
     }
@@ -148,6 +153,7 @@ final class Preferences: ObservableObject {
         changeOnWake = d.object(forKey: Key.changeOnWake) as? Bool ?? true
         pauseOnBattery = d.object(forKey: Key.pauseOnBattery) as? Bool ?? false
         applyToAllScreens = d.object(forKey: Key.applyToAllScreens) as? Bool ?? true
+        differentImagePerScreen = d.object(forKey: Key.differentImagePerScreen) as? Bool ?? false
         scaling = ScalingMode(rawValue: d.string(forKey: Key.scaling) ?? "") ?? .fill
         minWidth = d.object(forKey: Key.minWidth) as? Int ?? 1920
         minHeight = d.object(forKey: Key.minHeight) as? Int ?? 1080
@@ -182,6 +188,7 @@ final class Preferences: ObservableObject {
         static let changeOnWake = "changeOnWake"
         static let pauseOnBattery = "pauseOnBattery"
         static let applyToAllScreens = "applyToAllScreens"
+        static let differentImagePerScreen = "differentImagePerScreen"
         static let scaling = "scaling"
         static let minWidth = "minWidth"
         static let minHeight = "minHeight"

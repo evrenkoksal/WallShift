@@ -23,10 +23,13 @@ final class AppState: ObservableObject {
     @Published private var historyIndex = 0
     private var recentIdentities: [String] = []
     private var lastKnownInterval: Int
+    private var lastKnownPerScreen: Bool
 
     init() {
         Self.handleCommandLineOnlyFlags()
-        lastKnownInterval = Preferences().intervalSeconds
+        let initialPrefs = Preferences()
+        lastKnownInterval = initialPrefs.intervalSeconds
+        lastKnownPerScreen = initialPrefs.differentImagePerScreen
         FileLocations.ensureDirectories()
         loadHistory()
         current = history.first
@@ -41,6 +44,11 @@ final class AppState: ObservableObject {
                 let intervalChanged = self.prefs.intervalSeconds != self.lastKnownInterval
                 self.lastKnownInterval = self.prefs.intervalSeconds
                 self.rescheduleTimer(resetCycle: intervalChanged)
+                // Mirror or split the current set right away when the mode flips.
+                if self.prefs.differentImagePerScreen != self.lastKnownPerScreen {
+                    self.lastKnownPerScreen = self.prefs.differentImagePerScreen
+                    self.reapplyCurrent()
+                }
             }
             .store(in: &cancellables)
 
@@ -77,21 +85,26 @@ final class AppState: ObservableObject {
             let fresh = pool.filter { !recentIdentities.contains($0.identity) }
             var queue = (fresh.isEmpty ? pool : fresh).shuffled()
 
+            // One image per screen in per-screen mode, otherwise a single image.
+            let needed = usesPerScreenImages ? NSScreen.screens.count : 1
+            var downloaded: [(RemoteImage, URL)] = []
             var lastFailure: Error?
-            while let candidate = queue.popLast() {
+            while downloaded.count < needed, let candidate = queue.popLast() {
                 do {
                     let file = try await Downloader.download(candidate, prefs: prefs)
-                    try await WallpaperManager.apply(fileURL: file, prefs: prefs)
-                    record(candidate, file: file)
-                    lastError = nil
-                    scheduleNext(resetCycle: true)
-                    return
+                    downloaded.append((candidate, file))
                 } catch {
                     lastFailure = error
                     continue // Try the next candidate; a single dead link is not fatal.
                 }
             }
-            throw lastFailure ?? WallShiftError.noImagesFound
+            guard !downloaded.isEmpty else { throw lastFailure ?? WallShiftError.noImagesFound }
+
+            // If the pool ran short, the remaining screens reuse images cyclically.
+            try await WallpaperManager.apply(files: downloaded.map(\.1), prefs: prefs)
+            record(downloaded)
+            lastError = nil
+            scheduleNext(resetCycle: true)
         } catch {
             lastError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             scheduleNext(resetCycle: true)
@@ -134,22 +147,32 @@ final class AppState: ObservableObject {
         return collected
     }
 
-    private func record(_ image: RemoteImage, file: URL) {
-        let entry = WallpaperRecord(
-            id: UUID().uuidString,
-            source: image.source,
-            title: image.title,
-            credit: image.credit,
-            remoteURL: image.imageURL,
-            pageURL: image.pageURL,
-            fileName: file.lastPathComponent,
-            appliedAt: Date()
-        )
+    /// True when each display should get its own picture.
+    var usesPerScreenImages: Bool {
+        prefs.differentImagePerScreen && prefs.applyToAllScreens && NSScreen.screens.count > 1
+    }
+
+    private func record(_ items: [(RemoteImage, URL)]) {
+        let now = Date()
+        let records = items.map { image, file in
+            WallpaperRecord(
+                id: UUID().uuidString,
+                source: image.source,
+                title: image.title,
+                credit: image.credit,
+                remoteURL: image.imageURL,
+                pageURL: image.pageURL,
+                fileName: file.lastPathComponent,
+                appliedAt: now
+            )
+        }
+        var entry = records[0]
+        if records.count > 1 { entry.companions = Array(records.dropFirst()) }
         current = entry
         history.insert(entry, at: 0)
         history = Array(history.prefix(max(prefs.keepHistoryCount, 5)))
         historyIndex = 0
-        recentIdentities.append(image.identity)
+        recentIdentities.append(contentsOf: items.map { $0.0.identity })
         recentIdentities = Array(recentIdentities.suffix(300))
         saveHistory()
         WallpaperManager.pruneCache(limitMB: prefs.cacheLimitMB, keeping: protectedFileNames())
@@ -179,7 +202,7 @@ final class AppState: ObservableObject {
             return
         }
         do {
-            try await WallpaperManager.apply(fileURL: entry.localURL, prefs: prefs)
+            try await WallpaperManager.apply(files: files(for: entry), prefs: prefs)
             current = entry
             lastError = nil
         } catch {
@@ -187,11 +210,20 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// Re-applies the current image, e.g. after a display is connected.
+    /// Re-applies the current image(s), e.g. after a display is connected.
     func reapplyCurrent() {
         guard let current, FileManager.default.fileExists(atPath: current.localURL.path) else { return }
         let prefs = self.prefs
-        Task { try? await WallpaperManager.apply(fileURL: current.localURL, prefs: prefs) }
+        let files = files(for: current)
+        Task { try? await WallpaperManager.apply(files: files, prefs: prefs) }
+    }
+
+    /// Local files to apply for a history entry under the current mode.
+    private func files(for entry: WallpaperRecord) -> [URL] {
+        guard usesPerScreenImages else { return [entry.localURL] }
+        let existing = entry.images.map(\.localURL)
+            .filter { FileManager.default.fileExists(atPath: $0.path) }
+        return existing.isEmpty ? [entry.localURL] : existing
     }
 
     // MARK: - Scheduling
@@ -300,23 +332,25 @@ final class AppState: ObservableObject {
     }
 
     private func protectedFileNames() -> Set<String> {
-        Set(history.prefix(10).map(\.fileName))
+        Set(history.prefix(10).flatMap(\.allFileNames))
     }
 
     // MARK: - Utilities exposed to the UI
 
     func revealCurrentInFinder() {
         guard let current else { return }
-        NSWorkspace.shared.activateFileViewerSelecting([current.localURL])
+        NSWorkspace.shared.activateFileViewerSelecting(current.images.map(\.localURL))
     }
 
-    func openSourcePage() {
-        guard let url = current?.pageURL ?? current?.remoteURL else { return }
+    /// Opens the page of `image`, or of the current primary image.
+    func openSourcePage(_ image: WallpaperRecord? = nil) {
+        let target = image ?? current
+        guard let url = target?.pageURL ?? target?.remoteURL else { return }
         NSWorkspace.shared.open(url)
     }
 
-    func saveCurrentAs() {
-        guard let current else { return }
+    func saveCurrentAs(_ image: WallpaperRecord? = nil) {
+        guard let current = image ?? current else { return }
         let panel = NSSavePanel()
         panel.nameFieldStringValue = current.fileName
         panel.canCreateDirectories = true
@@ -328,7 +362,7 @@ final class AppState: ObservableObject {
     }
 
     func clearCache() {
-        WallpaperManager.clearCache(keeping: Set([current?.fileName].compactMap { $0 }))
+        WallpaperManager.clearCache(keeping: Set(current?.allFileNames ?? []))
     }
 
     func cacheSizeDescription() -> String {

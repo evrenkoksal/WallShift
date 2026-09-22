@@ -1,4 +1,5 @@
 import AppKit
+import ImageIO
 import SwiftUI
 
 /// The panel shown when the menu bar icon is clicked.
@@ -7,6 +8,8 @@ struct MenuPanel: View {
     @ObservedObject var prefs: Preferences
 
     @State private var now = Date()
+    /// Which screen's image the caption and the save/open buttons refer to.
+    @State private var selectedScreen = 0
     private let ticker = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     var body: some View {
@@ -39,20 +42,39 @@ struct MenuPanel: View {
         }
     }
 
+    /// The image shown on each screen, in `NSScreen.screens` order.
+    private var screenImages: [WallpaperRecord] {
+        guard let current = state.current else { return [] }
+        guard state.usesPerScreenImages, current.images.count > 1 else { return [current] }
+        let images = current.images
+        return NSScreen.screens.indices.map { images[$0 % images.count] }
+    }
+
+    /// The image the caption and buttons act on.
+    private var selectedImage: WallpaperRecord? {
+        let images = screenImages
+        guard !images.isEmpty else { return nil }
+        return images[min(selectedScreen, images.count - 1)]
+    }
+
     @ViewBuilder
     private var preview: some View {
-        if let current = state.current, let image = NSImage(contentsOf: current.localURL) {
+        let images = screenImages
+        if let selected = selectedImage {
             VStack(alignment: .leading, spacing: 6) {
-                Image(nsImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-                    .frame(height: 110)
-                    .frame(maxWidth: .infinity)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                Text(current.title ?? current.source.displayName)
+                if images.count > 1 {
+                    HStack(spacing: 6) {
+                        ForEach(Array(images.enumerated()), id: \.offset) { index, image in
+                            screenThumbnail(image, index: index, isSelected: index == selectedScreen)
+                        }
+                    }
+                } else {
+                    thumbnail(for: selected, height: 110)
+                }
+                Text(selected.title ?? selected.source.displayName)
                     .font(.caption)
                     .lineLimit(2)
-                Text([current.source.displayName, current.credit]
+                Text([selected.source.displayName, selected.credit]
                     .compactMap { $0 }
                     .joined(separator: " · "))
                     .font(.caption2)
@@ -65,6 +87,43 @@ struct MenuPanel: View {
                 .overlay(Text("Henüz duvar kağıdı değiştirilmedi")
                     .font(.caption)
                     .foregroundStyle(.secondary))
+        }
+    }
+
+    private func screenThumbnail(_ image: WallpaperRecord, index: Int, isSelected: Bool) -> some View {
+        let screens = NSScreen.screens
+        let name = index < screens.count ? screens[index].localizedName : "Ekran \(index + 1)"
+        return Button {
+            selectedScreen = index
+        } label: {
+            VStack(spacing: 3) {
+                thumbnail(for: image, height: 80)
+                    .overlay(RoundedRectangle(cornerRadius: 8)
+                        .strokeBorder(isSelected ? Color.accentColor : .clear, lineWidth: 2))
+                Text(name)
+                    .font(.caption2)
+                    .foregroundStyle(isSelected ? .primary : .secondary)
+                    .lineLimit(1)
+            }
+        }
+        .buttonStyle(.plain)
+        .help(image.title ?? image.source.displayName)
+    }
+
+    @ViewBuilder
+    private func thumbnail(for image: WallpaperRecord, height: CGFloat) -> some View {
+        if let nsImage = Thumbnails.image(for: image.localURL) {
+            Image(nsImage: nsImage)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .frame(height: height)
+                .frame(maxWidth: .infinity)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+        } else {
+            RoundedRectangle(cornerRadius: 8)
+                .fill(.quaternary)
+                .frame(height: height)
+                .frame(maxWidth: .infinity)
         }
     }
 
@@ -127,14 +186,14 @@ struct MenuPanel: View {
 
             HStack(spacing: 8) {
                 Button {
-                    state.saveCurrentAs()
+                    state.saveCurrentAs(selectedImage)
                 } label: {
                     Label("Kaydet…", systemImage: "square.and.arrow.down").frame(maxWidth: .infinity)
                 }
                 .disabled(state.current == nil)
 
                 Button {
-                    state.openSourcePage()
+                    state.openSourcePage(selectedImage)
                 } label: {
                     Label("Kaynağı aç", systemImage: "safari").frame(maxWidth: .infinity)
                 }
@@ -173,5 +232,26 @@ struct MenuPanel: View {
 
     private func openSettings() {
         state.requestSettings()
+    }
+}
+
+/// Downscaled, cached previews for the menu panel.
+enum Thumbnails {
+    private static let cache = NSCache<NSURL, NSImage>()
+
+    static func image(for url: URL) -> NSImage? {
+        if let cached = cache.object(forKey: url as NSURL) { return cached }
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: 640,
+        ]
+        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            return nil
+        }
+        let image = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+        cache.setObject(image, forKey: url as NSURL)
+        return image
     }
 }

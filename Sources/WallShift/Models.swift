@@ -101,8 +101,16 @@ struct WallpaperRecord: Codable, Identifiable, Hashable {
     var pageURL: URL?
     var fileName: String
     var appliedAt: Date
+    /// Images for the remaining screens when each display gets its own picture,
+    /// in `NSScreen.screens` order after the first one. Nil for single-image changes.
+    var companions: [WallpaperRecord]? = nil
 
     var localURL: URL { FileLocations.wallpapersDirectory.appendingPathComponent(fileName) }
+
+    /// Every image of this change, one per screen in `NSScreen.screens` order.
+    var images: [WallpaperRecord] { [self] + (companions ?? []) }
+
+    var allFileNames: [String] { images.map(\.fileName) }
 }
 
 /// Preset change intervals offered in the UI. `0` means "sadece elle".
