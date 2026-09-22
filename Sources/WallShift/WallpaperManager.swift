@@ -53,10 +53,7 @@ enum WallpaperManager {
     /// A single file is mirrored on every target screen.
     static func apply(files: [URL], prefs: Preferences) async throws {
         guard !files.isEmpty else { return }
-        let options: [NSWorkspace.DesktopImageOptionKey: Any] = [
-            .imageScaling: NSNumber(value: prefs.scaling.imageScaling.rawValue),
-            .allowClipping: NSNumber(value: prefs.scaling.allowsClipping),
-        ]
+        let options = desktopOptions(prefs)
         let focused = NSScreen.main
         let allScreens = NSScreen.screens
         let targets = prefs.applyToAllScreens ? allScreens : [focused].compactMap { $0 }
@@ -74,6 +71,23 @@ enum WallpaperManager {
             }
         }
         pruneScreenCopies(keeping: appliedNames, for: ordered)
+    }
+
+    /// Changes a single display and leaves every other screen untouched.
+    static func apply(file: URL, toScreenAt index: Int, prefs: Preferences) throws {
+        let screens = NSScreen.screens
+        guard screens.indices.contains(index) else { return }
+        let screen = screens[index]
+        let screenFile = try screenCopy(of: file, for: screen)
+        try NSWorkspace.shared.setDesktopImageURL(screenFile, for: screen, options: desktopOptions(prefs))
+        pruneScreenCopies(keeping: [screenFile.lastPathComponent], for: [screen])
+    }
+
+    private static func desktopOptions(_ prefs: Preferences) -> [NSWorkspace.DesktopImageOptionKey: Any] {
+        [
+            .imageScaling: NSNumber(value: prefs.scaling.imageScaling.rawValue),
+            .allowClipping: NSNumber(value: prefs.scaling.allowsClipping),
+        ]
     }
 
     /// A per-display clone of the image (APFS clone, so no extra disk space).

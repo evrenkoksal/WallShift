@@ -45,9 +45,14 @@ struct MenuPanel: View {
     /// The image shown on each screen, in `NSScreen.screens` order.
     private var screenImages: [WallpaperRecord] {
         guard let current = state.current else { return [] }
-        guard state.usesPerScreenImages, current.images.count > 1 else { return [current] }
-        let images = current.images
-        return NSScreen.screens.indices.map { images[$0 % images.count] }
+        guard state.usesPerScreenImages else { return [current] }
+        return state.screenImages(of: current)
+    }
+
+    private var selectedScreenName: String {
+        let screens = NSScreen.screens
+        let index = min(selectedScreen, max(screens.count - 1, 0))
+        return screens.indices.contains(index) ? screens[index].localizedName : "Ekran \(index + 1)"
     }
 
     /// The image the caption and buttons act on.
@@ -159,14 +164,39 @@ struct MenuPanel: View {
 
     private var actions: some View {
         VStack(spacing: 8) {
-            Button {
-                Task { await state.changeWallpaper() }
-            } label: {
-                Label("Şimdi değiştir", systemImage: "arrow.triangle.2.circlepath")
-                    .frame(maxWidth: .infinity)
+            if screenImages.count > 1 {
+                // Per-screen mode: the main button only touches the selected display.
+                HStack(spacing: 8) {
+                    Button {
+                        let index = selectedScreen
+                        Task { await state.changeWallpaper(onlyScreenAt: index) }
+                    } label: {
+                        Label("Şimdi değiştir · \(selectedScreenName)", systemImage: "arrow.triangle.2.circlepath")
+                            .lineLimit(1)
+                            .frame(maxWidth: .infinity)
+                    }
+                    .keyboardShortcut("r")
+                    .help("Yalnızca seçili ekranın görselini değiştirir")
+
+                    Button {
+                        Task { await state.changeWallpaper() }
+                    } label: {
+                        Label("Tümü", systemImage: "rectangle.on.rectangle")
+                    }
+                    .keyboardShortcut("r", modifiers: [.command, .shift])
+                    .help("Tüm ekranları birlikte değiştirir")
+                }
+                .disabled(state.isWorking)
+            } else {
+                Button {
+                    Task { await state.changeWallpaper() }
+                } label: {
+                    Label("Şimdi değiştir", systemImage: "arrow.triangle.2.circlepath")
+                        .frame(maxWidth: .infinity)
+                }
+                .keyboardShortcut("r")
+                .disabled(state.isWorking)
             }
-            .keyboardShortcut("r")
-            .disabled(state.isWorking)
 
             HStack(spacing: 8) {
                 Button {
