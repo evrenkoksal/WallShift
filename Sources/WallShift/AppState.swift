@@ -81,7 +81,7 @@ final class AppState: ObservableObject {
             while let candidate = queue.popLast() {
                 do {
                     let file = try await Downloader.download(candidate, prefs: prefs)
-                    try WallpaperManager.apply(fileURL: file, prefs: prefs)
+                    try await WallpaperManager.apply(fileURL: file, prefs: prefs)
                     record(candidate, file: file)
                     lastError = nil
                     scheduleNext(resetCycle: true)
@@ -160,26 +160,26 @@ final class AppState: ObservableObject {
     func showPrevious() {
         guard historyIndex + 1 < history.count else { return }
         historyIndex += 1
-        applyFromHistory()
+        Task { await applyFromHistory() }
     }
 
     func showNextInHistory() {
         guard historyIndex > 0 else { return }
         historyIndex -= 1
-        applyFromHistory()
+        Task { await applyFromHistory() }
     }
 
     var canGoBack: Bool { historyIndex + 1 < history.count }
     var canGoForward: Bool { historyIndex > 0 }
 
-    private func applyFromHistory() {
+    private func applyFromHistory() async {
         let entry = history[historyIndex]
         guard FileManager.default.fileExists(atPath: entry.localURL.path) else {
             lastError = "Bu görselin yerel kopyası silinmiş."
             return
         }
         do {
-            try WallpaperManager.apply(fileURL: entry.localURL, prefs: prefs)
+            try await WallpaperManager.apply(fileURL: entry.localURL, prefs: prefs)
             current = entry
             lastError = nil
         } catch {
@@ -190,7 +190,8 @@ final class AppState: ObservableObject {
     /// Re-applies the current image, e.g. after a display is connected.
     func reapplyCurrent() {
         guard let current, FileManager.default.fileExists(atPath: current.localURL.path) else { return }
-        try? WallpaperManager.apply(fileURL: current.localURL, prefs: prefs)
+        let prefs = self.prefs
+        Task { try? await WallpaperManager.apply(fileURL: current.localURL, prefs: prefs) }
     }
 
     // MARK: - Scheduling

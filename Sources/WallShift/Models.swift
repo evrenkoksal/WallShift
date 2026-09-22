@@ -135,6 +135,11 @@ enum FileLocations {
         supportDirectory.appendingPathComponent("Wallpapers", isDirectory: true)
     }
 
+    /// Per-display copies of the applied image; see `WallpaperManager.apply`.
+    static var screensDirectory: URL {
+        supportDirectory.appendingPathComponent("Screens", isDirectory: true)
+    }
+
     static var historyFile: URL {
         supportDirectory.appendingPathComponent("history.json")
     }
