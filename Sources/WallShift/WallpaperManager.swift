@@ -45,17 +45,28 @@ enum WallpaperManager {
     /// gets its own file path; handing all screens the same URL lets the wallpaper
     /// agent treat them as one linked choice and skip the unfocused display.
     static func apply(fileURL: URL, prefs: Preferences) async throws {
+        try await apply(files: [fileURL], prefs: prefs)
+    }
+
+    /// Applies `files` to the screens in `NSScreen.screens` order: screen i gets
+    /// `files[i]`, wrapping around when there are more screens than files.
+    /// A single file is mirrored on every target screen.
+    static func apply(files: [URL], prefs: Preferences) async throws {
+        guard !files.isEmpty else { return }
         let options: [NSWorkspace.DesktopImageOptionKey: Any] = [
             .imageScaling: NSNumber(value: prefs.scaling.imageScaling.rawValue),
             .allowClipping: NSNumber(value: prefs.scaling.allowsClipping),
         ]
         let focused = NSScreen.main
-        let targets = prefs.applyToAllScreens ? NSScreen.screens : [focused].compactMap { $0 }
+        let allScreens = NSScreen.screens
+        let targets = prefs.applyToAllScreens ? allScreens : [focused].compactMap { $0 }
         let ordered = targets.filter { $0 != focused } + targets.filter { $0 == focused }
 
         var appliedNames = Set<String>()
         for (index, screen) in ordered.enumerated() {
-            let screenFile = try screenCopy(of: fileURL, for: screen)
+            let position = allScreens.firstIndex(of: screen) ?? 0
+            let file = files[position % files.count]
+            let screenFile = try screenCopy(of: file, for: screen)
             try NSWorkspace.shared.setDesktopImageURL(screenFile, for: screen, options: options)
             appliedNames.insert(screenFile.lastPathComponent)
             if index < ordered.count - 1 {

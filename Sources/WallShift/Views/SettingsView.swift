@@ -209,6 +209,12 @@ private struct DisplayTab: View {
         Form {
             Section {
                 Toggle("Tüm ekranlara uygula", isOn: $prefs.applyToAllScreens)
+                VStack(alignment: .leading, spacing: 2) {
+                    Toggle("Her ekrana farklı görsel", isOn: $prefs.differentImagePerScreen)
+                        .disabled(!prefs.applyToAllScreens)
+                    Text(perScreenHint)
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 Picker("Yerleşim", selection: $prefs.scaling) {
                     ForEach(ScalingMode.allCases) { mode in
                         Text(mode.displayName).tag(mode)
@@ -233,6 +239,13 @@ private struct DisplayTab: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    private var perScreenHint: String {
+        let count = NSScreen.screens.count
+        if !prefs.applyToAllScreens { return "Önce \"Tüm ekranlara uygula\" seçeneğini açın." }
+        if count < 2 { return "Şu an tek ekran bağlı; ikinci ekran takılınca devreye girer." }
+        return "\(count) ekran algılandı; her değişimde \(count) ayrı görsel indirilir."
     }
 
     private var mainScreenDescription: String {
