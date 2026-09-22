@@ -38,15 +38,62 @@ enum Downloader {
 
 /// Applies a local image file to the desktop and keeps the cache tidy.
 enum WallpaperManager {
-    static func apply(fileURL: URL, prefs: Preferences) throws {
+    /// Sets the wallpaper on every target screen.
+    ///
+    /// With several displays, macOS only reliably refreshes the screens when the
+    /// focused one (where the menu bar panel is open) is set last and each screen
+    /// gets its own file path; handing all screens the same URL lets the wallpaper
+    /// agent treat them as one linked choice and skip the unfocused display.
+    static func apply(fileURL: URL, prefs: Preferences) async throws {
         let options: [NSWorkspace.DesktopImageOptionKey: Any] = [
             .imageScaling: NSNumber(value: prefs.scaling.imageScaling.rawValue),
             .allowClipping: NSNumber(value: prefs.scaling.allowsClipping),
         ]
-        let screens = prefs.applyToAllScreens ? NSScreen.screens : [NSScreen.main].compactMap { $0 }
-        for screen in screens {
-            try NSWorkspace.shared.setDesktopImageURL(fileURL, for: screen, options: options)
+        let focused = NSScreen.main
+        let targets = prefs.applyToAllScreens ? NSScreen.screens : [focused].compactMap { $0 }
+        let ordered = targets.filter { $0 != focused } + targets.filter { $0 == focused }
+
+        var appliedNames = Set<String>()
+        for (index, screen) in ordered.enumerated() {
+            let screenFile = try screenCopy(of: fileURL, for: screen)
+            try NSWorkspace.shared.setDesktopImageURL(screenFile, for: screen, options: options)
+            appliedNames.insert(screenFile.lastPathComponent)
+            if index < ordered.count - 1 {
+                try? await Task.sleep(for: .milliseconds(400))
+            }
         }
+        pruneScreenCopies(keeping: appliedNames, for: ordered)
+    }
+
+    /// A per-display clone of the image (APFS clone, so no extra disk space).
+    private static func screenCopy(of fileURL: URL, for screen: NSScreen) throws -> URL {
+        let fm = FileManager.default
+        try fm.createDirectory(at: FileLocations.screensDirectory, withIntermediateDirectories: true)
+        let destination = FileLocations.screensDirectory
+            .appendingPathComponent("\(displayID(of: screen))-\(fileURL.lastPathComponent)")
+        if !fm.fileExists(atPath: destination.path) {
+            try fm.copyItem(at: fileURL, to: destination)
+        }
+        return destination
+    }
+
+    /// Drops the previous per-display copies once the new ones are in place.
+    private static func pruneScreenCopies(keeping names: Set<String>, for screens: [NSScreen]) {
+        let fm = FileManager.default
+        let prefixes = screens.map { "\(displayID(of: $0))-" }
+        guard let files = try? fm.contentsOfDirectory(at: FileLocations.screensDirectory,
+                                                      includingPropertiesForKeys: nil) else { return }
+        for url in files {
+            let name = url.lastPathComponent
+            if !names.contains(name), prefixes.contains(where: name.hasPrefix) {
+                try? fm.removeItem(at: url)
+            }
+        }
+    }
+
+    private static func displayID(of screen: NSScreen) -> UInt32 {
+        let key = NSDeviceDescriptionKey("NSScreenNumber")
+        return (screen.deviceDescription[key] as? NSNumber)?.uint32Value ?? 0
     }
 
     /// Deletes the oldest cached files once the cache passes the configured budget.
